@@ -1,0 +1,340 @@
+#!/usr/bin/env perl
+#===============================================================================
+#
+# Description: ID operation tool
+#
+# Copyright (c) 2017 Northwest A&F University
+# Author: Qinhu Wang
+# Email: wangqinhu@nwafu.edu.cn
+#
+#===============================================================================
+
+use strict;
+use warnings;
+use Getopt::Std;
+
+&usage if (@ARGV < 1);
+
+my $command = shift @ARGV;
+my %function = ('find' => \&find, 'replace' => \&replace, 'diff' => \&diff, 'fasta' => \&fasta);
+
+if (!defined $function{$command}) {
+	die "Unknown subcommand $command\n";
+	&usage;
+}
+
+&{$function{$command}};
+exit(0);
+
+#
+# Find id1 (file1) in id2 (file2) 
+#
+sub find {
+
+	# option
+	my %option = ('d'=>'\t', 'f'=>1, 's'=>'u');
+	getopts('d:f:s:h', \%option);
+
+	# usage
+	if (@ARGV < 2 or $option{'h'}) {
+		die (qq/
+Usage:    idot find [options] <id_file> <target_file>\n
+Options:  -d  STR  The delimiter character of fields, default <TAB>.
+                   Valid delimiters: comma (","), space ("\\s"), or <TAB> ("\\t")
+          -f  INT  The field(s) that specified as ID column(s), default 1.
+                   Use comma (",") to specify multiple fields. e.g. -f 1,2
+          -s  STR  The method used for ID sort.  default: u.
+                   Available methods: sn - strint number
+                                      s  - string
+                                      n  - number
+                                      u  - unsorted (use id_file id order)
+                                      t  - use target_file id order
+                                      r  - reverse (in combination with others)
+          -h       Help message\n\n/);
+	}
+
+	# argument
+	my ($id_file, $target_file) = @ARGV;
+
+	# process ID fields
+	my $fn = &field_index($option{'f'});
+
+	# parse id and content
+	my ($id1, $order1) = &parse_file($id_file, $option{'d'}, $fn);
+	my ($id2, $order2) = &parse_file($target_file, $option{'d'}, $fn);
+
+	# Match and output
+	my $order = sort_id($option{'s'}, $order1, $order2);
+	foreach my $id (@$order) {
+		if (exists $id1->{$id} and exists $id2->{$id}) {
+			print $id2->{$id}, "\n";
+		}
+	}
+
+}
+
+sub diff {
+
+	# option
+	my %option = ('d'=>'\t', 'f'=>1, 's'=>'u', 'p'=>'1');
+	getopts('d:f:p:h', \%option);
+
+	# usage
+	if (@ARGV < 2 or $option{'h'}) {
+		die (qq/
+Usage:    idot diff [options] <id_file> <target_file>\n
+Options:  -d  STR  The delimiter character of fields, default <TAB>.
+                   Valid delimiters: comma (","), space ("\\s"), or <TAB> ("\\t")
+          -f  INT  The field(s) that specified as ID column(s), default 1.
+                   Use comma (",") to specify multiple fields. e.g. -f 1,2
+          -p  INT  Print the specific ID of file: 1 - id_file (default)
+                                                  2 - target_file
+          -h       Help message\n\n/);
+	}
+
+	# argument
+	my ($id_file, $target_file) = @ARGV;
+
+	# process ID fields
+	my $fn = &field_index($option{'f'});
+
+	# parse id and content
+	my ($id1, $order1) = &parse_file($id_file, $option{'d'}, $fn);
+	my ($id2, $order2) = &parse_file($target_file, $option{'d'}, $fn);
+
+	# diff and output
+	my %all_id = ();
+	foreach my $id (@$order1) {
+		$all_id{$id} = 1;
+	}
+	foreach my $id (@$order2) {
+		$all_id{$id} = 1;
+	}
+	if ($option{'p'} == 1) {
+		foreach my $id (sort keys %all_id) {
+			if (exists $id1->{$id} and !exists $id2->{$id}) {
+				print $id1->{$id}, "\n";
+			}
+		}
+	} elsif ($option{'p'} == 2) {
+		foreach my $id (sort keys %all_id) {
+			if (!exists $id1->{$id} and exists $id2->{$id}) {
+				print $id2->{$id}, "\n";
+			}
+		}
+	} else {
+		die 'Aborted: unknown file number for "idot diff"' . "\n";
+	}
+}
+
+sub replace {
+
+	# option
+	my %option = ();
+	getopts('h', \%option);
+
+	# usage
+	if (@ARGV < 2 or $option{'h'}) {
+		die (qq/
+Usage:    idot replace <id_file> <target_file>
+\n/)}
+
+	# argument
+	my ($id_file, $target_file) = @ARGV;
+
+	my $hash = load_tsv($id_file);
+	my $line = '';
+
+	open (IN, $target_file) or die "Cannot open $target_file: $!\n";
+	while (<IN>) {
+		chomp;
+		next if (/^#/);
+		my @w = split /\t/;	
+		if (!exists $hash->{$w[0]}) {
+			die "Aborted: no $w[0] found in $id_file.\n";
+		}
+		$w[0] = $hash->{$w[0]};
+		$line = join ("\t", @w);
+		print $line, "\n";
+
+	}
+	close IN;
+}
+
+sub fasta {
+
+	# option
+	my %option = ();
+	getopts('h', \%option);
+
+	# usage
+	if (@ARGV < 2 or $option{'h'}) {
+		die (qq/
+Usage:    idot fasta <id_file> <database_file>
+\n/)}
+
+	# argument
+	my ($id_file, $database_file) = @ARGV;
+
+	my @list = ();
+	open (LIST, $id_file) or die "Cannot open file $id_file: $!\n";
+	while (my $id = <LIST>) {
+		chomp $id;
+		$id =~ s/\s//g;
+	 	push @list, $id
+	}
+	close LIST;
+
+	my %seq = ();
+	my $sid = ();
+	open (IN, $database_file) or die "Cannot open file $database_file: $!\n";;
+	while (<IN>) {
+		if (/^\>(\S+)/) {
+			$sid = $1;
+		} else {
+			$seq{$sid} .= $_;
+		}
+	}
+	close IN;
+
+	foreach my $id (@list) {
+		if (exists $seq{$id}) {
+			print ">$id\n";
+			print $seq{"$id"};
+		} else {
+			warn "No $id found in $database_file!\n";
+		}
+	}
+
+}
+
+sub usage {
+	die (qq/
+Usage:    idot <command> [<arguments>]\n
+Command:  find     find id_file matched lines in target_file
+          diff     find specific lines in id_file or target_file
+          replace  replace id in the target_file according to the id_file
+          fasta    fetch id_file match fasta sequences from all sequences
+\n/);
+}
+
+sub sort_id {
+	my ($option, $order1, $order2) = @_;
+	my @order = ();
+	$option = lc($option);
+	my $reverse = 0;
+	if ($option =~ /r/) {
+		$reverse = 1;
+		$option =~ s/r//;
+	}
+	if ($option eq 'u') {
+		@order = @$order1;
+	} elsif ($option eq 't') {
+		@order = @$order2;
+	} elsif ($option eq 'sn') {
+		@order = sort by_string_number @$order1;
+	} elsif ($option eq 'n') {
+		@order = sort by_number @$order1;
+	} elsif ($option eq 's') {
+		@order = sort @$order1;
+	} else {
+		die "Aborted: unknown sorting method: $option\n";
+	}
+	if ($reverse == 1) {
+		@order = reverse @order;
+	}
+	return \@order;
+}
+
+sub by_string_number {
+	$a =~ /(\d+)/;
+	my $numa = $1;
+	$b =~ /(\d+)/;
+	my $numb = $1;
+	return $numa <=> $numb;
+}
+
+sub by_number {
+	$a <=> $b;
+}
+
+# return the field index served as ID
+sub field_index {
+	my $fields = shift;
+	my @f = split /\,/, $fields;
+	my @fn = ();
+	foreach my $f (@f) {
+		if ($f =~ /^\d+$/) {
+			push @fn, $f;
+		} else {
+			die (qq/Aborted: integer required for fields\n/);
+		}
+	}
+	return \@fn;
+}
+
+# parse the input file
+sub parse_file {
+	my ($file, $delim, $fn) = @_;
+	my %list = ();
+	my @order = ();
+	my %id_unique = ();
+	my $id = ''; 
+	open (ID, $file) or die "Cannot open $file: $!\n";
+	while (<ID>) {
+		chomp;
+		next if (/^\#/);
+		next if (/^\s*$/);
+		my @w = split /$delim/;
+		$id = $w[$fn->[0]-1];
+		if (@$fn > 1) {
+			for (my $i = 1; $i < @$fn; $i++) {
+				$id .= "," . $w[$fn->[$i]-1];
+			}
+		}
+		push @order, $id;
+		$list{$id} = $_;
+		$id_unique{$id}++;
+	}
+	close ID;
+	# warn non-unique id
+	foreach my $id (sort keys %id_unique) {
+		if ($id_unique{$id} > 1) {
+			warn "$id in $file is not unique, it appeared $id_unique{$id} times.\n";
+		}
+	}
+	return (\%list, \@order);
+}
+
+sub load_tsv {
+	my $file = shift;
+	my %hash = ();
+	open (IN, $file) or die $!;
+	while (<IN>) {
+		chomp;
+		next if /^\#/;
+		next if /^\s*$/;
+		my @w = split /\s/;
+		$hash{$w[0]} = $w[1];
+	}
+	close IN;
+	return \%hash;
+}
+
+sub load_fasta {
+	my $file = shift;
+	my %seq = ();
+	my $seq_id = undef;
+	open (IN, $file) or die "Cannot open $file: $!\n";
+	while (<IN>) {
+		chomp;
+		if (/^\>(\S+)/) {
+			$seq_id = $1;
+		} else {
+			s/\s+//g;
+			$seq{$seq_id} .= $_;
+		}
+	}
+	close IN;
+	return \%seq;
+}
