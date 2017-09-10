@@ -1,5 +1,6 @@
 ID operation tool (idot)
 ------------------------
+Collections of my frequently used ID manipulation scripts in bioinformatic works.
 
 idot
 ----
@@ -55,7 +56,7 @@ idot replace <id_file> <target_file>
 idot fasta
 ----------
 ```
-Usage:    idot fasta <id_file> <database_file>
+idot fasta <id_file> <database_file>
 ```
 
 Author
